@@ -1,6 +1,6 @@
 use crate::{
     InputBuffer,
-    mem_storage::{EMAIL_SIZE, Row, USERNAME_SIZE},
+    mem_storage::{EMAIL_SIZE, Row, Table, USERNAME_SIZE},
 };
 
 // Meta commands always start with a dot
@@ -9,8 +9,9 @@ pub enum MetaCommandResult {
     CommandUnrecognizedCommand,
 }
 
-pub fn do_meta_command(input_buffer: &InputBuffer) -> MetaCommandResult {
+pub fn do_meta_command(input_buffer: &InputBuffer, table: &mut Table) -> MetaCommandResult {
     if input_buffer.buffer == ".exit" {
+        table.db_close();
         std::process::exit(0);
     } else {
         return MetaCommandResult::CommandUnrecognizedCommand;

@@ -1,3 +1,8 @@
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+};
+
 use crate::tokenizer::{Statement, StatementType};
 
 pub enum ExecuteResult {
@@ -69,25 +74,144 @@ const TABLE_MAX_PAGES: usize = 100;
 const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
 const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
-pub struct Table {
+pub struct Pager {
+    file: File,
+    file_length: usize,
     pages: [Option<Box<[u8; PAGE_SIZE]>>; TABLE_MAX_PAGES],
+}
+
+impl Pager {
+    pub fn pager_open(filename: &str) -> Self {
+        let file = match OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create(true)
+            .open(filename)
+        {
+            Ok(f) => f,
+            Err(_) => {
+                println!("Unable to open file.");
+                std::process::exit(0);
+            }
+        };
+
+        let metadata = match file.metadata() {
+            Ok(m) => m,
+            Err(_) => {
+                println!("Unable to get metadata.");
+                std::process::exit(0);
+            }
+        };
+
+        let file_length = metadata.len() as usize;
+
+        Self {
+            file,
+            file_length,
+            pages: std::array::from_fn(|_| None),
+        }
+    }
+
+    pub fn get_page_mut(&mut self, page_num: usize) -> &mut [u8; PAGE_SIZE] {
+        if page_num > TABLE_MAX_PAGES {
+            println!(
+                "Tried to fetch page number out of bounds. {} > {}",
+                page_num, TABLE_MAX_PAGES
+            );
+            std::process::exit(0);
+        }
+
+        if self.pages[page_num].is_none() {
+            // Allocate memory and load from file
+            self.pages[page_num] = Some(Box::new([0u8; PAGE_SIZE]));
+            let mut num_pages = self.file_length / PAGE_SIZE;
+
+            // We might save a partial page at the end of the file
+            if self.file_length % PAGE_SIZE != 0 {
+                num_pages += 1;
+            }
+
+            if page_num <= num_pages {
+                // Move the cursor and read
+                let offset = (page_num * PAGE_SIZE) as u64;
+                let _ = self.file.seek(SeekFrom::Start(offset));
+                let _ = self
+                    .file
+                    .read_exact(self.pages[page_num].as_deref_mut().unwrap());
+            }
+        }
+
+        self.pages[page_num].as_deref_mut().unwrap()
+    }
+
+    fn flush(&mut self, page_num: usize, size: usize) {
+        if self.pages[page_num].is_none() {
+            println!("Tried to flush null page.");
+            std::process::exit(0);
+        }
+
+        let page = self
+            .pages
+            .get(page_num)
+            .and_then(|p| p.as_ref())
+            .expect("Tried to flush null page.");
+
+        let offset = (page_num * PAGE_SIZE) as u64;
+        let _ = self.file.seek(SeekFrom::Start(offset));
+        let _ = self.file.write_all(&page[..size]);
+    }
+}
+
+pub struct Table {
+    pager: Pager,
     num_rows: usize,
 }
 
 impl Table {
-    pub fn new() -> Self {
+    pub fn db_open(filename: &str) -> Self {
+        let pager = Pager::pager_open(filename);
+        let num_rows = pager.file_length / ROW_SIZE;
+
         Self {
-            pages: std::array::from_fn(|_| None),
-            num_rows: 0,
+            pager: pager,
+            num_rows,
+        }
+    }
+
+    // Flushes the page cache to disk
+    // Closes the database file
+    // Frees the memory for the pager and table data structures
+    pub fn db_close(&mut self) {
+        let pager = &mut self.pager;
+        let num_full_pages = self.num_rows / ROWS_PER_PAGE;
+
+        for i in 0..num_full_pages {
+            if pager.pages[i].is_none() {
+                continue;
+            }
+            pager.flush(i, PAGE_SIZE);
+            pager.pages[i] = None;
+        }
+
+        // There may be a partial page to write to end of the file
+        let num_additional_rows = self.num_rows % ROWS_PER_PAGE;
+        if num_additional_rows > 0 {
+            let page_num = num_full_pages;
+            if !pager.pages[page_num].is_none() {
+                pager.flush(page_num, num_additional_rows * ROW_SIZE);
+                pager.pages[page_num] = None;
+            }
+        }
+
+        for i in 0..TABLE_MAX_PAGES {
+            if !pager.pages[i].is_none() {
+                pager.pages[i] = None;
+            }
         }
     }
 
     fn get_page_mut(&mut self, page_num: usize) -> &mut [u8; PAGE_SIZE] {
-        if self.pages[page_num].is_none() {
-            self.pages[page_num] = Some(Box::new([0u8; PAGE_SIZE]));
-        }
-
-        self.pages[page_num].as_deref_mut().unwrap()
+        self.pager.get_page_mut(page_num)
     }
 
     fn execute_insert(&mut self, statement: &Statement) -> ExecuteResult {

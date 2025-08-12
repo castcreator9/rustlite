@@ -1,3 +1,4 @@
+use std::env;
 use std::io::{self, Write};
 
 pub mod mem_storage;
@@ -35,13 +36,20 @@ impl InputBuffer {
 }
 
 fn main() {
-    let mut table = Table::new();
+    let args: Vec<_> = env::args().collect();
+    if args.len() < 2 {
+        println!("Must supply a database filename.");
+        std::process::exit(0);
+    }
+
+    let filename = &args[1];
+    let mut table = Table::db_open(filename.as_str());
     let mut input_buffer = InputBuffer::new();
 
     loop {
         input_buffer.read_input();
         if input_buffer.buffer.starts_with('.') {
-            match do_meta_command(&input_buffer) {
+            match do_meta_command(&input_buffer, &mut table) {
                 MetaCommandResult::CommandSuccess => {
                     continue;
                 }
