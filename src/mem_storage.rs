@@ -70,16 +70,24 @@ const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
 const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
 pub struct Table {
-    pages: Box<Vec<Vec<u8>>>,
+    pages: [Option<Box<[u8; PAGE_SIZE]>>; TABLE_MAX_PAGES],
     num_rows: usize,
 }
 
 impl Table {
     pub fn new() -> Self {
         Self {
-            pages: Box::new(Vec::new()),
+            pages: std::array::from_fn(|_| None),
             num_rows: 0,
         }
+    }
+
+    fn get_page_mut(&mut self, page_num: usize) -> &mut [u8; PAGE_SIZE] {
+        if self.pages[page_num].is_none() {
+            self.pages[page_num] = Some(Box::new([0u8; PAGE_SIZE]));
+        }
+
+        self.pages[page_num].as_deref_mut().unwrap()
     }
 
     fn execute_insert(&mut self, statement: &Statement) -> ExecuteResult {
@@ -93,26 +101,19 @@ impl Table {
         let page_num = row_num / ROWS_PER_PAGE;
         let row_offset = (row_num % ROWS_PER_PAGE) * ROW_SIZE;
 
-        // Initialize page
-        if self.pages.len() <= page_num {
-            while self.pages.len() <= page_num {
-                self.pages.push(vec![0; PAGE_SIZE]);
-            }
-        }
-
-        let page = &mut self.pages[page_num];
+        let page = self.get_page_mut(page_num);
         page[row_offset..row_offset + ROW_SIZE].copy_from_slice(&serialized_data);
         self.num_rows += 1;
 
         ExecuteResult::Success
     }
 
-    fn execute_select(&self) -> ExecuteResult {
+    fn execute_select(&mut self) -> ExecuteResult {
         for row_num in 0..self.num_rows {
             let page_num = row_num / ROWS_PER_PAGE;
             let row_offset = (row_num % ROWS_PER_PAGE) * ROW_SIZE;
 
-            let page = &self.pages[page_num];
+            let page = self.get_page_mut(page_num);
             let row_data = &page[row_offset..row_offset + ROW_SIZE];
 
             if let Some(row) = Row::deserialize_row(row_data) {

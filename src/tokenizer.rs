@@ -21,6 +21,8 @@ pub enum PrepareResult {
     Success,
     UnrecognizedStatement,
     SyntaxError,
+    StringTooLong,
+    IdIssue,
 }
 
 pub enum StatementType {
@@ -64,10 +66,10 @@ impl Statement {
                             };
                             self.row_to_insert = row;
                         } else {
-                            return PrepareResult::SyntaxError;
+                            return PrepareResult::IdIssue;
                         }
                     } else {
-                        return PrepareResult::SyntaxError;
+                        return PrepareResult::StringTooLong;
                     }
                 }
                 _ => {

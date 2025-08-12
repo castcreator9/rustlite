@@ -66,6 +66,14 @@ fn main() {
                 println!("Syntax error. Could not parse the statement.");
                 continue;
             }
+            PrepareResult::StringTooLong => {
+                println!("String is too long.");
+                continue;
+            }
+            PrepareResult::IdIssue => {
+                println!("Id must be a positive integer.");
+                continue;
+            }
         }
 
         match table.execute_statement(&statement) {
