@@ -1,6 +1,8 @@
 use std::{
+    cell::{RefCell, RefMut},
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
+    rc::Rc,
 };
 
 use crate::tokenizer::{Statement, StatementType};
@@ -167,6 +169,50 @@ pub struct Table {
     num_rows: usize,
 }
 
+type TableRef = Rc<RefCell<Table>>;
+
+pub struct Cursor {
+    table: TableRef,
+    row_num: usize,
+    end_of_table: bool,
+}
+
+impl Cursor {
+    pub fn from_start(table: TableRef) -> Self {
+        let num_rows = table.borrow().num_rows;
+        Self {
+            table,
+            row_num: 0,
+            end_of_table: (num_rows == 0),
+        }
+    }
+
+    pub fn from_end(table: TableRef) -> Self {
+        let num_rows = table.borrow().num_rows;
+        Self {
+            table,
+            row_num: num_rows,
+            end_of_table: true,
+        }
+    }
+
+    pub fn get_value(&self) -> RefMut<[u8; PAGE_SIZE]> {
+        let row_num = self.row_num;
+        let page_num = row_num / ROWS_PER_PAGE;
+
+        RefMut::map(self.table.borrow_mut(), |table| {
+            table.get_page_mut(page_num)
+        })
+    }
+
+    pub fn advance(&mut self) {
+        self.row_num += 1;
+        if self.row_num >= self.table.borrow().num_rows {
+            self.end_of_table = true;
+        }
+    }
+}
+
 impl Table {
     pub fn db_open(filename: &str) -> Self {
         let pager = Pager::pager_open(filename);
@@ -213,47 +259,55 @@ impl Table {
     fn get_page_mut(&mut self, page_num: usize) -> &mut [u8; PAGE_SIZE] {
         self.pager.get_page_mut(page_num)
     }
+}
 
-    fn execute_insert(&mut self, statement: &Statement) -> ExecuteResult {
-        if self.num_rows >= TABLE_MAX_ROWS {
+fn execute_insert(table: TableRef, statement: &Statement) -> ExecuteResult {
+    {
+        if table.borrow().num_rows >= TABLE_MAX_ROWS {
             return ExecuteResult::TableFull;
         }
-
-        let serialized_data = statement.row_to_insert.serialize_row();
-
-        let row_num = self.num_rows;
-        let page_num = row_num / ROWS_PER_PAGE;
-        let row_offset = (row_num % ROWS_PER_PAGE) * ROW_SIZE;
-
-        let page = self.get_page_mut(page_num);
-        page[row_offset..row_offset + ROW_SIZE].copy_from_slice(&serialized_data);
-        self.num_rows += 1;
-
-        ExecuteResult::Success
     }
 
-    fn execute_select(&mut self) -> ExecuteResult {
-        for row_num in 0..self.num_rows {
-            let page_num = row_num / ROWS_PER_PAGE;
-            let row_offset = (row_num % ROWS_PER_PAGE) * ROW_SIZE;
+    let serialized_data = statement.row_to_insert.serialize_row();
+    let cursor = Cursor::from_end(Rc::clone(&table));
 
-            let page = self.get_page_mut(page_num);
+    let row_offset = (cursor.row_num % ROWS_PER_PAGE) * ROW_SIZE;
+    {
+        let mut page = cursor.get_value();
+        page[row_offset..row_offset + ROW_SIZE].copy_from_slice(&serialized_data);
+    }
+    {
+        table.borrow_mut().num_rows += 1;
+    }
+
+    ExecuteResult::Success
+}
+
+fn execute_select(table: TableRef) -> ExecuteResult {
+    let mut cursor = Cursor::from_start(Rc::clone(&table));
+
+    while !cursor.end_of_table {
+        {
+            let row_offset = (cursor.row_num % ROWS_PER_PAGE) * ROW_SIZE;
+            let page = cursor.get_value();
             let row_data = &page[row_offset..row_offset + ROW_SIZE];
 
             if let Some(row) = Row::deserialize_row(row_data) {
-                println!("({}, {}, {})", row.id, row.username, row.email,);
+                println!("({}, {}, {})", row.id, row.username, row.email);
             } else {
                 println!("Error deserializing data.");
             }
         }
 
-        ExecuteResult::Success
+        cursor.advance();
     }
 
-    pub fn execute_statement(&mut self, statement: &Statement) -> ExecuteResult {
-        match statement.stype {
-            StatementType::Insert => self.execute_insert(statement),
-            StatementType::Select => self.execute_select(),
-        }
+    ExecuteResult::Success
+}
+
+pub fn execute_statement(table: TableRef, statement: &Statement) -> ExecuteResult {
+    match statement.stype {
+        StatementType::Insert => execute_insert(Rc::clone(&table), statement),
+        StatementType::Select => execute_select(Rc::clone(&table)),
     }
 }

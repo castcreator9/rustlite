@@ -1,10 +1,12 @@
+use std::cell::RefCell;
 use std::env;
 use std::io::{self, Write};
+use std::rc::Rc;
 
 pub mod mem_storage;
 pub mod tokenizer;
 
-use crate::mem_storage::{ExecuteResult, Table};
+use crate::mem_storage::{ExecuteResult, Table, execute_statement};
 use crate::tokenizer::{MetaCommandResult, PrepareResult, Statement, do_meta_command};
 
 pub struct InputBuffer {
@@ -43,13 +45,13 @@ fn main() {
     }
 
     let filename = &args[1];
-    let mut table = Table::db_open(filename.as_str());
+    let table = Rc::new(RefCell::new(Table::db_open(filename.as_str())));
     let mut input_buffer = InputBuffer::new();
 
     loop {
         input_buffer.read_input();
         if input_buffer.buffer.starts_with('.') {
-            match do_meta_command(&input_buffer, &mut table) {
+            match do_meta_command(&input_buffer, &mut table.borrow_mut()) {
                 MetaCommandResult::CommandSuccess => {
                     continue;
                 }
@@ -84,7 +86,7 @@ fn main() {
             }
         }
 
-        match table.execute_statement(&statement) {
+        match execute_statement(Rc::clone(&table), &statement) {
             ExecuteResult::Success => {
                 println!("Executed.");
             }
